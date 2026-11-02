@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # LOCAL: tests the server-only guard (app_private.is_server) from a NON-superuser login, like Supabase's authenticator.
 # Needs the saai_conc database from concurrency.sh. usage: PGHOST=.. PGPORT=.. PGUSER=postgres bash server_guard.sh
-set -u; DB=saai_conc; pass=0; fail=0
+set -u; export PGPASSWORD; pass=0; fail=0
+if [ "${SAAI_MODE:-scratch}" = "supabase-local" ]; then DB=${DB:-postgres}; else DB=saai_conc; fi
+# SAFETY: local hosts only (loopback or a unix-socket directory). Applies to every mode; PGHOST must be set explicitly.
+unset PGSERVICE PGSERVICEFILE PGHOSTADDR
+case "${PGHOST:-}" in 127.0.0.1|localhost|/*) ;; *) echo "REFUSED: PGHOST must be 127.0.0.1, localhost or a local socket directory (got '${PGHOST:-unset}')"; exit 2;; esac
 ok(){ if [ "$2" = "$3" ]; then echo "PASS  $1"; pass=$((pass+1)); else echo "FAIL  $1 (expected '$2', got '$3')"; fail=$((fail+1)); fi; }
 S="psql -X -q -At -d $DB"
 $S -c "do \$\$ begin create role authenticator login noinherit; exception when duplicate_object then null; end \$\$; grant anon, authenticated, service_role to authenticator;" >/dev/null

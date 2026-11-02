@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # LOCAL concurrency tests for the SAA'I schema (real parallel connections, COMMITTED data, scratch DB only).
 # usage: PGHOST=<socket dir or host> PGPORT=<port> PGUSER=postgres bash concurrency.sh
-# Refuses to run unless the database name is saai_conc. Never point it at a real project.
+# Scratch mode only ever drops/recreates the fixed database saai_conc (the DB variable is ignored). Every mode refuses non-local hosts. Never point it at a real project.
 set -u
-DB=saai_conc
+MODE=${SAAI_MODE:-scratch}   # scratch = PG16 + stub (created here) | supabase-local = your `supabase start` database (real auth)
+# scratch mode DROPS and recreates its database, so the name is FIXED and the DB environment variable is ignored.
+if [ "$MODE" = "supabase-local" ]; then DB=${DB:-postgres}; else MODE=scratch; DB=saai_conc; fi
+# SAFETY: local hosts only (loopback or a unix-socket directory). Applies to every mode; PGHOST must be set explicitly.
+unset PGSERVICE PGSERVICEFILE PGHOSTADDR
+case "${PGHOST:-}" in 127.0.0.1|localhost|/*) ;; *) echo "REFUSED: PGHOST must be 127.0.0.1, localhost or a local socket directory (got '${PGHOST:-unset}')"; exit 2;; esac
 HERE="$(cd "$(dirname "$0")/../../.." && pwd)"
 P="psql -X -q -At -v ON_ERROR_STOP=0"
-export PGHOST PGPORT PGUSER
+export PGHOST PGPORT PGUSER PGPASSWORD
 pass=0; fail=0
 ok(){ if [ "$2" = "$3" ]; then echo "PASS  $1 (got $3)"; pass=$((pass+1)); else echo "FAIL  $1 (expected $2, got $3)"; fail=$((fail+1)); fi; }
 q(){ $P -d $DB -c "$1"; }
@@ -20,10 +25,15 @@ SQL
 ); if echo "$out" | grep -q "^ERROR"; then echo "ERR:$(echo "$out" | grep -m1 "^ERROR" | sed 's/^ERROR:  //')"; else echo "$out" | tail -1; fi; }
 export -f as; export P DB
 
-# ---- fresh database
-$P -d postgres -c "drop database if exists $DB" -c "create database $DB" >/dev/null
-$P -d $DB -v ON_ERROR_STOP=1 -f "$HERE/supabase/tests/local/00_supabase_stub.sql" >/dev/null || exit 1
-$P -d $DB -v ON_ERROR_STOP=1 -f "$HERE/supabase/migrations/20260101000000_saai_core.sql" >/dev/null 2>&1 || { echo "migration failed"; exit 1; }
+# ---- database
+if [ "$MODE" = "supabase-local" ]; then
+  # the schema must already exist (supabase db reset --local). Leaves COMMITTED test rows: run `supabase db reset --local` afterwards.
+  [ "$($P -d $DB -c "select to_regclass('public.orders') is not null")" = t ] || { echo "run 'supabase db reset --local' first (public.orders missing)"; exit 2; }
+else
+  $P -d postgres -c "drop database if exists $DB" -c "create database $DB" >/dev/null
+  $P -d $DB -v ON_ERROR_STOP=1 -f "$HERE/supabase/tests/local/00_supabase_stub.sql" >/dev/null || exit 1
+  $P -d $DB -v ON_ERROR_STOP=1 -f "$HERE/supabase/migrations/20260101000000_saai_core.sql" >/dev/null 2>&1 || { echo "migration failed"; exit 1; }
+fi
 
 U(){ printf '00000000-0000-4000-8000-%012d' "$1"; }
 ADMIN=$(U 1); M1=$(U 2); M2=$(U 3)
